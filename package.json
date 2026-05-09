@@ -1,0 +1,16 @@
+{
+  "name": "jarvis-monitor",
+  "version": "0.1.0",
+  "description": "Borderless circular HUD visualizing Claude Code activity — sessions, subagents, memory, tasks.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.1"
+  }
+}
