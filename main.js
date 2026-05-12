@@ -1,12 +1,32 @@
 const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const path = require('node:path');
 const http = require('node:http');
+const fsp = require('node:fs/promises');
 const { startWatcher, getState, on } = require('./watcher');
+const { loadConfig } = require('./config');
 
-const HOOK_PORT = Number(process.env.JARVIS_HOOK_PORT || 7373);
+const config = loadConfig();
+
+let lastUsage = null;
+
+async function readUsage() {
+  if (!config.usageCachePath) return null;
+  try {
+    const txt = await fsp.readFile(config.usageCachePath, 'utf8');
+    const data = JSON.parse(txt.replace(/^﻿/, ''));
+    return {
+      personal: { value: data.personal_raw, fetchedAt: data.personal_fetched_at, backoffUntil: data.personal_backoff_until },
+      work: { value: data.work_raw, fetchedAt: data.work_fetched_at, backoffUntil: data.work_backoff_until }
+    };
+  } catch {
+    return null;
+  }
+}
+
+const HOOK_PORT = Number(process.env.JARVIS_HOOK_PORT || config.hookPort || 7373);
 let win;
 
-app.setAppUserModelId('com.jmont.jarvis-monitor');
+app.setAppUserModelId('com.jarvis.monitor');
 
 function createWindow() {
   const display = screen.getPrimaryDisplay();
@@ -20,8 +40,8 @@ function createWindow() {
     minHeight: 480,
     title: 'JARVIS Monitor',
     frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
+    transparent: false,
+    backgroundMaterial: 'mica',
     resizable: true,
     autoHideMenuBar: true,
     webPreferences: {
@@ -34,6 +54,7 @@ function createWindow() {
 
   win.removeMenu();
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
+  if (process.env.JARVIS_DEVTOOLS === '1') win.webContents.openDevTools({ mode: 'detach' });
 }
 
 function broadcast(channel, payload) {
@@ -72,15 +93,25 @@ function startHookServer() {
 }
 
 app.whenReady().then(async () => {
-  createWindow();
-  await startWatcher();
-  startHookServer();
-
-  on('change', (snapshot) => broadcast('state:full', snapshot));
-
   ipcMain.handle('state:get', () => getState().snapshot());
+  ipcMain.handle('usage:get', () => lastUsage);
   ipcMain.on('window:close', () => win && win.close());
   ipcMain.on('window:minimize', () => win && win.minimize());
+  on('change', (snapshot) => broadcast('state:full', snapshot));
+
+  createWindow();
+  startHookServer();
+  startWatcher(config);
+
+  const tick = async () => {
+    const next = await readUsage();
+    if (JSON.stringify(next) !== JSON.stringify(lastUsage)) {
+      lastUsage = next;
+      broadcast('usage:update', lastUsage);
+    }
+  };
+  await tick();
+  setInterval(tick, 30000);
 });
 
 app.on('window-all-closed', () => app.quit());

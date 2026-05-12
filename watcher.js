@@ -1,18 +1,24 @@
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const os = require('node:os');
 const chokidar = require('chokidar');
 const { EventEmitter } = require('node:events');
 
-const HOME = os.homedir();
-const CLAUDE_DIR = path.join(HOME, '.claude');
-const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
-const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
-const SHELLS_ROOT = path.join(
-  process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local'),
-  'Temp',
-  'claude'
-);
+function buildSource(s) {
+  return {
+    id: s.id,
+    label: s.label,
+    color: s.color,
+    claudeDir: s.claudeDir,
+    sessionsDir: path.join(s.claudeDir, 'sessions'),
+    projectsDir: path.join(s.claudeDir, 'projects'),
+    shellsRoot: s.shellsRoot || null,
+    procPath: s.procPath || null
+  };
+}
+
+let SOURCES = [];
+let SOURCES_BY_ID = {};
+function getSource(id) { return SOURCES_BY_ID[id]; }
 
 const ACTIVE_WINDOW_MS = 30 * 1000;
 const MAX_HOOK_EVENTS = 50;
@@ -58,19 +64,63 @@ async function readJson(file) {
   }
 }
 
-async function loadInstance(pidFile) {
+function isPidAlive(pid) {
+  if (!pid || !Number.isFinite(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+const PID_CHECK_TTL_MS = 5000;
+const pidCheckCache = new Map();
+async function isPidAliveForSource(source, pid) {
+  if (!pid || !Number.isFinite(pid)) return false;
+  if (!source.procPath) return isPidAlive(pid);
+  const key = `${source.id}:${pid}`;
+  const cached = pidCheckCache.get(key);
+  const now = Date.now();
+  if (cached && (now - cached.checkedAt) < PID_CHECK_TTL_MS) return cached.alive;
+  let alive = false;
+  try {
+    await fsp.stat(path.join(source.procPath, String(pid)));
+    alive = true;
+  } catch { alive = false; }
+  pidCheckCache.set(key, { alive, checkedAt: now });
+  return alive;
+}
+
+async function loadInstance(source, pidFile) {
   const meta = await readJson(pidFile);
   if (!meta || !meta.sessionId) {
     const pid = path.basename(pidFile, '.json');
     for (const id of Object.keys(state.instances)) {
-      if (state.instances[id].pid === Number(pid)) delete state.instances[id];
+      const inst = state.instances[id];
+      if (inst.source === source.id && inst.pid === Number(pid)) delete state.instances[id];
     }
     return;
   }
+  if (!(await isPidAliveForSource(source, meta.pid))) {
+    if (state.instances[meta.sessionId] && state.instances[meta.sessionId].source === source.id) {
+      delete state.instances[meta.sessionId];
+    }
+    if (source.id === 'win') fsp.unlink(pidFile).catch(() => {});
+    return;
+  }
   const id = meta.sessionId;
+  for (const otherId of Object.keys(state.instances)) {
+    if (otherId === id) continue;
+    const other = state.instances[otherId];
+    if (other.source === source.id && other.pid === meta.pid) delete state.instances[otherId];
+  }
   const existing = state.instances[id] || { agents: {}, shells: {} };
   Object.assign(existing, {
     sessionId: id,
+    source: source.id,
+    sourceLabel: source.label,
+    sourceColor: source.color,
     pid: meta.pid,
     cwd: meta.cwd,
     cwdLabel: cwdLabel(meta.cwd),
@@ -84,12 +134,58 @@ async function loadInstance(pidFile) {
   state.instances[id] = existing;
   await refreshAgents(id);
   await refreshShells(id);
+  await refreshContext(id);
+  await refreshMemory(id);
+}
+
+async function refreshContext(sessionId) {
+  const inst = state.instances[sessionId];
+  if (!inst || !inst.encodedCwd) return;
+  const source = getSource(inst.source);
+  if (!source) return;
+  const file = path.join(source.projectsDir, inst.encodedCwd, `${sessionId}.jsonl`);
+  try {
+    const st = await fsp.stat(file);
+    inst.contextBytes = st.size;
+  } catch {
+    inst.contextBytes = 0;
+  }
+}
+
+const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'];
+
+async function refreshMemory(sessionId) {
+  const inst = state.instances[sessionId];
+  if (!inst || !inst.encodedCwd) return;
+  const source = getSource(inst.source);
+  if (!source) return;
+  const dir = path.join(source.projectsDir, inst.encodedCwd, 'memory');
+  let files = [];
+  try { files = await fsp.readdir(dir); } catch { inst.memoryFiles = []; return; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.md') || f.toLowerCase() === 'memory.md') continue;
+    let type = 'other';
+    try {
+      const fd = await fsp.open(path.join(dir, f), 'r');
+      const buf = Buffer.alloc(512);
+      const { bytesRead } = await fd.read(buf, 0, 512, 0);
+      await fd.close();
+      const head = buf.slice(0, bytesRead).toString('utf8');
+      const m = /^type:\s*([a-z]+)/im.exec(head);
+      if (m && MEMORY_TYPES.includes(m[1].toLowerCase())) type = m[1].toLowerCase();
+    } catch {}
+    out.push({ name: f, type });
+  }
+  inst.memoryFiles = out;
 }
 
 async function refreshAgents(sessionId) {
   const inst = state.instances[sessionId];
   if (!inst || !inst.encodedCwd) return;
-  const dir = path.join(PROJECTS_DIR, inst.encodedCwd, sessionId, 'subagents');
+  const source = getSource(inst.source);
+  if (!source) return;
+  const dir = path.join(source.projectsDir, inst.encodedCwd, sessionId, 'subagents');
   const next = {};
   let files = [];
   try { files = await fsp.readdir(dir); } catch { inst.agents = {}; return; }
@@ -184,7 +280,13 @@ async function readTail(file, bytes) {
 async function refreshShells(sessionId) {
   const inst = state.instances[sessionId];
   if (!inst || !inst.encodedCwd) return;
-  const dir = path.join(SHELLS_ROOT, inst.encodedCwd, sessionId, 'tasks');
+  const source = getSource(inst.source);
+  if (!source || !source.shellsRoot) {
+    inst.shells = {};
+    for (const ag of Object.values(inst.agents || {})) ag.shells = {};
+    return;
+  }
+  const dir = path.join(source.shellsRoot, inst.encodedCwd, sessionId, 'tasks');
   let files = [];
   try { files = await fsp.readdir(dir); } catch {
     inst.shells = {};
@@ -279,26 +381,33 @@ function scheduleEmit() {
 }
 
 async function rescanInstances() {
-  let files = [];
-  try { files = await fsp.readdir(SESSIONS_DIR); } catch { return; }
   const liveSessionIds = new Set();
-  for (const f of files) {
-    if (!f.endsWith('.json')) continue;
-    await loadInstance(path.join(SESSIONS_DIR, f));
-  }
-  try {
-    const current = await fsp.readdir(SESSIONS_DIR);
-    const livePids = new Set(
-      current.filter((f) => f.endsWith('.json')).map((f) => Number(f.replace(/\.json$/, '')))
-    );
-    for (const id of Object.keys(state.instances)) {
-      if (!livePids.has(state.instances[id].pid)) delete state.instances[id];
-      else liveSessionIds.add(id);
+  const livePidsBySource = {};
+  for (const source of SOURCES) {
+    let files = [];
+    try { files = await fsp.readdir(source.sessionsDir); } catch { livePidsBySource[source.id] = new Set(); continue; }
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      await loadInstance(source, path.join(source.sessionsDir, f));
     }
-  } catch {}
+    try {
+      const current = await fsp.readdir(source.sessionsDir);
+      livePidsBySource[source.id] = new Set(
+        current.filter((f) => f.endsWith('.json')).map((f) => Number(f.replace(/\.json$/, '')))
+      );
+    } catch { livePidsBySource[source.id] = new Set(); }
+  }
+  for (const id of Object.keys(state.instances)) {
+    const inst = state.instances[id];
+    const livePids = livePidsBySource[inst.source];
+    if (!livePids || !livePids.has(inst.pid)) delete state.instances[id];
+    else liveSessionIds.add(id);
+  }
   for (const id of liveSessionIds) {
     await refreshAgents(id);
     await refreshShells(id);
+    await refreshContext(id);
+    await refreshMemory(id);
   }
 }
 
@@ -306,14 +415,16 @@ setInterval(() => {
   rescanInstances().then(scheduleEmit);
 }, 3000);
 
-function findInstanceByEncodedCwd(encodedCwd, sessionId) {
+function findInstanceByEncodedCwd(sourceId, encodedCwd, sessionId) {
   for (const inst of Object.values(state.instances)) {
-    if (inst.sessionId === sessionId && inst.encodedCwd === encodedCwd) return inst;
+    if (inst.source === sourceId && inst.sessionId === sessionId && inst.encodedCwd === encodedCwd) return inst;
   }
   return null;
 }
 
-function startWatcher() {
+function startWatcher(config) {
+  SOURCES = (config && config.sources ? config.sources : []).map(buildSource);
+  SOURCES_BY_ID = Object.fromEntries(SOURCES.map((s) => [s.id, s]));
   return new Promise(async (resolve) => {
     try {
       await rescanInstances();
@@ -322,33 +433,56 @@ function startWatcher() {
     }
     scheduleEmit();
 
-    const watcher = chokidar.watch([SESSIONS_DIR, PROJECTS_DIR, SHELLS_ROOT], {
+    const watchPaths = [];
+    const needsPolling = SOURCES.some((s) => s.claudeDir.startsWith('\\\\'));
+    for (const source of SOURCES) {
+      watchPaths.push(source.sessionsDir, source.projectsDir);
+      if (source.shellsRoot) watchPaths.push(source.shellsRoot);
+    }
+
+    const watcher = chokidar.watch(watchPaths, {
       ignored: ['**/.lock', '**/file-history/**', '**/shell-snapshots/**', '**/plugins/**', '**/memory/**'],
       ignoreInitial: true,
       depth: 5,
-      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 }
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
+      usePolling: needsPolling,
+      interval: 1500,
+      binaryInterval: 3000
     });
+
+    function matchSource(filePath) {
+      for (const source of SOURCES) {
+        if (filePath.startsWith(source.sessionsDir)) return { source, kind: 'sessions' };
+        if (filePath.startsWith(source.projectsDir)) return { source, kind: 'projects' };
+        if (source.shellsRoot && filePath.startsWith(source.shellsRoot)) return { source, kind: 'shells' };
+      }
+      return null;
+    }
 
     watcher.on('all', async (event, filePath) => {
       try {
-        if (filePath.startsWith(SESSIONS_DIR)) {
-          if (filePath.endsWith('.json')) await loadInstance(filePath);
+        const m = matchSource(filePath);
+        if (!m) return;
+        const { source, kind } = m;
+        if (kind === 'sessions') {
+          if (filePath.endsWith('.json')) await loadInstance(source, filePath);
           if (event === 'unlink') {
             const pid = Number(path.basename(filePath, '.json'));
             for (const id of Object.keys(state.instances)) {
-              if (state.instances[id].pid === pid) delete state.instances[id];
+              const inst = state.instances[id];
+              if (inst.source === source.id && inst.pid === pid) delete state.instances[id];
             }
           }
           scheduleEmit();
           return;
         }
-        if (filePath.startsWith(PROJECTS_DIR)) {
-          const rel = path.relative(PROJECTS_DIR, filePath);
-          const parts = rel.split(path.sep);
+        if (kind === 'projects') {
+          const rel = path.relative(source.projectsDir, filePath);
+          const parts = rel.split(/[\\/]/);
           if (parts.length >= 4 && parts[2] === 'subagents') {
             const encodedCwd = parts[0];
             const sid = parts[1];
-            const inst = findInstanceByEncodedCwd(encodedCwd, sid);
+            const inst = findInstanceByEncodedCwd(source.id, encodedCwd, sid);
             if (inst) {
               await refreshAgents(sid);
               await refreshShells(sid);
@@ -357,13 +491,13 @@ function startWatcher() {
           }
           return;
         }
-        if (filePath.startsWith(SHELLS_ROOT)) {
-          const rel = path.relative(SHELLS_ROOT, filePath);
-          const parts = rel.split(path.sep);
+        if (kind === 'shells') {
+          const rel = path.relative(source.shellsRoot, filePath);
+          const parts = rel.split(/[\\/]/);
           if (parts.length >= 4 && parts[2] === 'tasks') {
             const encodedCwd = parts[0];
             const sid = parts[1];
-            const inst = findInstanceByEncodedCwd(encodedCwd, sid);
+            const inst = findInstanceByEncodedCwd(source.id, encodedCwd, sid);
             if (inst) {
               await refreshShells(sid);
               scheduleEmit();

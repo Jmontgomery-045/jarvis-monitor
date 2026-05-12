@@ -2,5 +2,9 @@ node_modules/
 dist/
 out/
 *.log
+stdout.log
+stderr.log
 .DS_Store
 Thumbs.db
+.claude/
+config.json

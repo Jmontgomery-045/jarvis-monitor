@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "Borderless circular HUD visualizing Claude Code activity — sessions, subagents, memory, tasks.",
   "main": "main.js",
+  "private": true,
+  "license": "MIT",
+  "author": "Josh Montgomery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jmontgomery-045/jarvis-monitor.git"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --enable-logging"

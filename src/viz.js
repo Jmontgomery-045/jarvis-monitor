@@ -1,5 +1,12 @@
 const TWO_PI = Math.PI * 2;
 
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return '110,224,255';
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+
 function phaseOf(id) {
   let h = 0;
   const s = String(id);
@@ -106,7 +113,11 @@ export class Graph {
         kind: asCenter ? 'instanceCenter' : 'instance',
         x, y, r,
         label: asCenter ? '' : (inst.cwdLabel || ''),
+        cwdLabel: inst.cwdLabel || '',
         sessionId: inst.sessionId,
+        source: inst.source,
+        sourceLabel: inst.sourceLabel,
+        sourceColor: inst.sourceColor,
         pid: inst.pid,
         cwd: inst.cwd,
         version: inst.version,
@@ -116,7 +127,9 @@ export class Graph {
         active: busy,
         agentCount: Object.keys(inst.agents || {}).length,
         shellCount: Object.keys(inst.shells || {}).length +
-          Object.values(inst.agents || {}).reduce((n, ag) => n + Object.keys(ag.shells || {}).length, 0)
+          Object.values(inst.agents || {}).reduce((n, ag) => n + Object.keys(ag.shells || {}).length, 0),
+        contextBytes: inst.contextBytes || 0,
+        memoryFiles: inst.memoryFiles || []
       };
     };
 
@@ -151,7 +164,7 @@ export class Graph {
       if (!nC) return;
       const baseR = Math.max(5, Math.min(26, (minDim * 0.04) / Math.sqrt(nC)));
       const agentR = baseR * 1.1;
-      const shellR = baseR * 0.9;
+      const shellR = baseR * 0.55;
       const childMaxR = Math.max(agentR, shellR);
       const orbitR = Math.max(minOrbit, instNode.r + childMaxR * 1.5 + 10);
       const denom = fullCircle ? nC : Math.max(1, nC - 1);
@@ -176,7 +189,7 @@ export class Graph {
 
         if (c.kind === 'agent' && c.shells.length) {
           const nS = c.shells.length;
-          const subBase = Math.max(4, Math.min(20, (minDim * 0.032) / Math.sqrt(nS)));
+          const subBase = Math.max(3, Math.min(12, (minDim * 0.02) / Math.sqrt(nS)));
           const subOrbit = node.r + subBase * 1.5 + 8;
           const subArc = nS > 1 ? Math.PI * 0.6 : 0;
           const subStart = ca - subArc / 2;
@@ -208,7 +221,7 @@ export class Graph {
 
     if (nInst === 1) {
       const inst = instances[0];
-      const r = minDim * 0.075;
+      const r = minDim * 0.16;
       const instNode = buildInstanceNode(inst, cx, cy, r, true);
       nodes.push(instNode);
       const orbitR = Math.min(this.w, this.h) * 0.32;
@@ -220,7 +233,7 @@ export class Graph {
     const center = { id: 'core', kind: 'core', x: cx, y: cy, r: coreR };
     nodes.push(center);
 
-    const instR = Math.max(8, Math.min(22, (minDim * 0.06) / Math.sqrt(nInst)));
+    const instR = Math.max(14, Math.min(40, (minDim * 0.1) / Math.sqrt(nInst)));
     const instOrbit = minDim * (nInst <= 3 ? 0.26 : nInst <= 6 ? 0.3 : 0.34);
     const childArcFraction = nInst <= 2 ? 0.85 : nInst <= 4 ? 0.75 : 0.6;
     const childArc = (TWO_PI / nInst) * childArcFraction;
@@ -429,28 +442,42 @@ export class Graph {
     let color;
     switch (n.kind) {
       case 'core': color = COLOR.core; break;
-      case 'instance': color = active ? COLOR.instanceBusy : COLOR.instance; break;
-      case 'instanceCenter': color = active ? COLOR.instanceBusy : COLOR.core; break;
+      case 'instance': color = active ? COLOR.instanceBusy : (n.sourceColor || COLOR.instance); break;
+      case 'instanceCenter': color = active ? COLOR.instanceBusy : (n.sourceColor || COLOR.core); break;
       case 'agent': color = dead ? '#6b7280' : COLOR.agent; break;
       case 'shell': color = dead ? '#6b7280' : COLOR.shell; break;
       default: color = '#cfe6ff';
     }
 
-    if (n.kind === 'core' || n.kind === 'instanceCenter') {
+    if (n.kind === 'core' || n.kind === 'instanceCenter' || n.kind === 'instance') {
       const pulse = 0.85 + Math.sin(tt * 1.4) * 0.15;
+      const drawR = n.r * (n.kind === 'core' ? pulse : 1);
       ctx.save();
       ctx.shadowColor = color;
-      ctx.shadowBlur = 32 * pulse;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r * pulse, 0, TWO_PI);
-      const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
-      const rgb = color === COLOR.instanceBusy ? '255,209,102' : '110,224,255';
-      grd.addColorStop(0, `rgba(${rgb},0.95)`);
-      grd.addColorStop(0.55, `rgba(${rgb},0.4)`);
-      grd.addColorStop(1, `rgba(${rgb},0.05)`);
-      ctx.fillStyle = grd;
-      ctx.fill();
+      ctx.shadowBlur = (n.kind === 'core' ? 32 : 18) * pulse;
+      if (n.kind === 'core') {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, drawR, 0, TWO_PI);
+        const grd = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+        const rgb = hexToRgb(color);
+        grd.addColorStop(0, `rgba(${rgb},0.95)`);
+        grd.addColorStop(0.55, `rgba(${rgb},0.4)`);
+        grd.addColorStop(1, `rgba(${rgb},0.05)`);
+        ctx.fillStyle = grd;
+        ctx.fill();
+      } else {
+        this.drawInstanceRings(n, drawR, color, tt, isHover || isSelected);
+      }
       ctx.restore();
+
+      if (n.kind === 'instance' && n.label) {
+        const fontSize = Math.max(10, Math.min(14, drawR * 0.18));
+        this.drawArcText(n.label, n.x, n.y, drawR + fontSize * 0.7, fontSize, color, alpha);
+      }
+      if (n.kind === 'instanceCenter' && n.cwdLabel) {
+        const fontSize = Math.max(11, Math.min(16, drawR * 0.14));
+        this.drawArcText(n.cwdLabel, n.x, n.y, drawR + fontSize * 0.7, fontSize, color, alpha);
+      }
       ctx.restore();
       return;
     }
@@ -491,12 +518,150 @@ export class Graph {
       ctx.stroke();
     }
 
-    if (n.kind === 'instance' && n.label) {
-      ctx.fillStyle = 'rgba(207,230,255,0.85)';
-      ctx.font = '10px Segoe UI';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(n.label, n.x, n.y + drawR + 4);
+    if (n.kind === 'agent') {
+      const raw = n.description || n.type || '';
+      const MAX_LABEL = 10;
+      const label = raw.length > MAX_LABEL ? raw.slice(0, MAX_LABEL - 1).trimEnd() + '…' : raw;
+      if (label) {
+        const fontSize = Math.max(8, Math.min(11, drawR * 0.85));
+        this.drawArcText(label, n.x, n.y, drawR + fontSize * 0.7, fontSize, color, alpha);
+      }
+    }
+    ctx.restore();
+  }
+
+  drawInstanceRings(n, r, color, tt, emphasized) {
+    const ctx = this.ctx;
+    const cx = n.x;
+    const cy = n.y;
+    const rgb = hexToRgb(color);
+    const memTypeColor = {
+      user: '#6ee0ff',
+      feedback: '#ffd166',
+      project: '#7af1c5',
+      reference: '#ce9bff',
+      other: '#6b829e'
+    };
+
+    const coreR = r * 0.32;
+    const memInner = r * 0.40;
+    const memOuter = r * 0.62;
+    const ctxInner = r * 0.68;
+    const ctxOuter = r * 0.96;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, coreR, 0, TWO_PI);
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+    grd.addColorStop(0, `rgba(${rgb},0.95)`);
+    grd.addColorStop(1, `rgba(${rgb},0.45)`);
+    ctx.fillStyle = grd;
+    ctx.fill();
+
+    const memFiles = n.memoryFiles || [];
+    const memN = memFiles.length;
+    if (memN > 0) {
+      const seg = TWO_PI / memN;
+      const gap = Math.min(seg * 0.18, 0.06);
+      const rot = tt * 0.05;
+      for (let i = 0; i < memN; i++) {
+        const a0 = rot + i * seg + gap / 2;
+        const a1 = rot + (i + 1) * seg - gap / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, memOuter, a0, a1);
+        ctx.arc(cx, cy, memInner, a1, a0, true);
+        ctx.closePath();
+        const c = memTypeColor[memFiles[i].type] || memTypeColor.other;
+        const mrgb = hexToRgb(c);
+        ctx.fillStyle = `rgba(${mrgb},0.78)`;
+        ctx.fill();
+        ctx.strokeStyle = `rgba(${mrgb},0.95)`;
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      ctx.arc(cx, cy, (memInner + memOuter) / 2, 0, TWO_PI);
+      ctx.strokeStyle = `rgba(${rgb},0.18)`;
+      ctx.setLineDash([2, 4]);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const bytes = n.contextBytes || 0;
+    const segBytes = 32 * 1024;
+    const ctxN = Math.min(64, Math.max(0, Math.ceil(bytes / segBytes)));
+    if (ctxN > 0) {
+      const seg = TWO_PI / Math.max(ctxN, 12);
+      const totalArc = seg * ctxN;
+      const gap = Math.min(seg * 0.25, 0.05);
+      const rot = -Math.PI / 2 - tt * 0.03;
+      for (let i = 0; i < ctxN; i++) {
+        const a0 = rot + i * seg + gap / 2;
+        const a1 = rot + (i + 1) * seg - gap / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ctxOuter, a0, a1);
+        ctx.arc(cx, cy, ctxInner, a1, a0, true);
+        ctx.closePath();
+        const t = i / Math.max(1, ctxN - 1);
+        const alpha = 0.35 + t * 0.5;
+        ctx.fillStyle = `rgba(${rgb},${alpha.toFixed(3)})`;
+        ctx.fill();
+      }
+      if (totalArc < TWO_PI - 0.01) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, (ctxInner + ctxOuter) / 2, rot + totalArc, rot + TWO_PI);
+        ctx.strokeStyle = `rgba(${rgb},0.12)`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      ctx.arc(cx, cy, (ctxInner + ctxOuter) / 2, 0, TWO_PI);
+      ctx.strokeStyle = `rgba(${rgb},0.15)`;
+      ctx.setLineDash([2, 6]);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, TWO_PI);
+    ctx.strokeStyle = `rgba(${rgb},${emphasized ? 0.9 : 0.55})`;
+    ctx.lineWidth = emphasized ? 1.6 : 1;
+    ctx.stroke();
+  }
+
+  drawArcText(text, cx, cy, radius, fontSize, color, alpha) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.font = `${fontSize}px Segoe UI`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.globalAlpha = (alpha == null ? 1 : alpha) * 0.95;
+    ctx.shadowColor = 'rgba(0,0,0,0.65)';
+    ctx.shadowBlur = 3;
+
+    const chars = [...text];
+    const widths = chars.map((c) => ctx.measureText(c).width);
+    const totalArc = widths.reduce((sum, w) => sum + w, 0) / radius;
+    const maxArc = Math.PI * 1.4;
+    const arc = Math.min(totalArc, maxArc);
+    const scale = arc / totalArc;
+    const top = -Math.PI / 2;
+    let angle = top - arc / 2;
+    for (let i = 0; i < chars.length; i++) {
+      const step = (widths[i] / radius) * scale;
+      const charAngle = angle + step / 2;
+      const x = cx + Math.cos(charAngle) * radius;
+      const y = cy + Math.sin(charAngle) * radius;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(charAngle + Math.PI / 2);
+      ctx.fillText(chars[i], 0, 0);
+      ctx.restore();
+      angle += step;
     }
     ctx.restore();
   }

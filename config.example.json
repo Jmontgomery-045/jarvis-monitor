@@ -1,0 +1,13 @@
+{
+  "hookPort": 7373,
+  "usageCachePath": null,
+  "sources": [
+    {
+      "id": "win",
+      "label": "Windows",
+      "color": "#6ee0ff",
+      "claudeDir": "~/.claude",
+      "shellsRoot": "%LOCALAPPDATA%/Temp/claude"
+    }
+  ]
+}

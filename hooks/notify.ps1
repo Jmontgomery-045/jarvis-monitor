@@ -24,8 +24,10 @@ $body = @{
   payload = $parsed
 } | ConvertTo-Json -Depth 8 -Compress
 
+$port = if ($env:JARVIS_HOOK_PORT) { $env:JARVIS_HOOK_PORT } else { '7373' }
+
 try {
-  Invoke-RestMethod -Uri 'http://127.0.0.1:7373/hook' `
+  Invoke-RestMethod -Uri "http://127.0.0.1:$port/hook" `
     -Method Post `
     -Body $body `
     -ContentType 'application/json' `

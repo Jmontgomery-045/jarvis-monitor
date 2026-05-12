@@ -99,6 +99,22 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+let lastUsage = null;
+const STALE_AFTER_SEC = 900;
+
+function fmtUsage(acc) {
+  if (!acc || acc.value == null) return '<span class="v" style="color:var(--muted)">--</span>';
+  const ageSec = Math.floor(Date.now() / 1000) - (acc.fetchedAt || 0);
+  const stale = ageSec > STALE_AFTER_SEC;
+  const pct = acc.value;
+  let color = 'var(--text)';
+  if (pct >= 90) color = '#ff6b6b';
+  else if (pct >= 75) color = 'var(--accent-warm)';
+  else if (pct >= 50) color = 'var(--memory)';
+  else color = 'var(--accent)';
+  return `<span class="v" style="color:${color}">${pct}%${stale ? '?' : ''}</span>`;
+}
+
 function renderSummary(state) {
   const instances = Object.values(state.instances || {});
   let nBusy = 0;
@@ -122,10 +138,16 @@ function renderSummary(state) {
     }
   }
   hudSummary.innerHTML = `
-    <div class="row"><span>Instances</span><span class="v">${instances.length}</span></div>
-    <div class="row"><span>Busy</span><span class="v" style="color:var(--accent-warm)">${nBusy}</span></div>
-    <div class="row"><span>Agents</span><span class="v" style="color:var(--agent)">${nAgents}${nActiveAgents ? ` · ${nActiveAgents} live` : ''}</span></div>
-    <div class="row"><span>Shells</span><span class="v" style="color:var(--shell)">${nShells}${nActiveShells ? ` · ${nActiveShells} live` : ''}</span></div>
+    <div class="group">
+      <div class="row"><span>Instances</span><span class="v">${instances.length}</span></div>
+      <div class="row"><span>Busy</span><span class="v" style="color:var(--accent-warm)">${nBusy}</span></div>
+      <div class="row"><span>Agents</span><span class="v" style="color:var(--agent)">${nAgents}${nActiveAgents ? ` · ${nActiveAgents} live` : ''}</span></div>
+      <div class="row"><span>Shells</span><span class="v" style="color:var(--shell)">${nShells}${nActiveShells ? ` · ${nActiveShells} live` : ''}</span></div>
+    </div>
+    <div class="group usage">
+      <div class="row"><span>Personal 5h</span>${fmtUsage(lastUsage && lastUsage.personal)}</div>
+      <div class="row"><span>Work 5h</span>${fmtUsage(lastUsage && lastUsage.work)}</div>
+    </div>
   `;
 }
 
@@ -152,6 +174,7 @@ function renderDetail(node) {
   let html = '';
   if (node.kind === 'instance' || node.kind === 'instanceCenter') {
     html = `<h3>Instance</h3><div class="kv">
+      <span class="k">Source</span><span class="v">${esc(node.sourceLabel || node.source || '—')}</span>
       <span class="k">Cwd</span><span class="v">${esc(node.cwd || '—')}</span>
       <span class="k">PID</span><span class="v">${esc(node.pid)}</span>
       <span class="k">Session</span><span class="v">${esc(node.sessionId.slice(0, 8))}…</span>
@@ -178,14 +201,22 @@ function renderDetail(node) {
   hudDetail.classList.add('show');
 }
 
+let lastState = null;
 async function init() {
+  lastUsage = await window.jarvis.getUsage();
   const initial = decorate(await window.jarvis.getState());
+  lastState = initial;
   graph.setState(initial);
   renderSummary(initial);
   window.jarvis.onState((s) => {
     const decorated = decorate(s);
+    lastState = decorated;
     graph.setState(decorated);
     renderSummary(decorated);
+  });
+  window.jarvis.onUsage((u) => {
+    lastUsage = u;
+    if (lastState) renderSummary(lastState);
   });
   window.jarvis.onHook((e) => graph.flashHook(e));
 }
