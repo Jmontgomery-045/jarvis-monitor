@@ -1,0 +1,4 @@
+/* Top-level view switching between jarvis HUD (#root) and sticky views (#sticky-root) */
+body[data-view="jarvis"] #sticky-root { display: none; }
+body[data-view="board"] #root,
+body[data-view="notes"] #root { display: none; }
