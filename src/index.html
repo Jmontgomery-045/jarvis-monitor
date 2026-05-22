@@ -4,8 +4,10 @@
   <meta charset="UTF-8">
   <title>JARVIS Monitor</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="sticky-styles.css">
+  <link rel="stylesheet" href="app-shell.css">
 </head>
-<body>
+<body data-view="jarvis">
   <div id="root">
     <header id="titlebar"></header>
     <canvas id="stage"></canvas>
@@ -14,6 +16,39 @@
       <section id="hud-detail"></section>
     </aside>
   </div>
+
+  <div id="sticky-root" class="view-board">
+    <div id="drag-strip"></div>
+
+    <div id="view-board">
+      <div id="board-wrap">
+        <div id="board"></div>
+      </div>
+
+      <aside id="archive-panel">
+        <div id="archive-header">
+          <span>ARCHIVE</span>
+          <button id="btn-archive-close">✕</button>
+        </div>
+        <div id="archive-content"></div>
+      </aside>
+    </div>
+
+    <div id="view-notes">
+      <div id="notes-sidebar">
+        <div id="notes-groups"></div>
+        <button id="btn-add-notes-group" class="notes-add-btn">+ Group</button>
+      </div>
+      <div id="notes-editor">
+        <input id="note-title" type="text" placeholder="Title" disabled />
+        <textarea id="note-body" placeholder="Select or create a note…" disabled></textarea>
+        <div id="note-empty">No note selected.<br><span class="hint">Ctrl+J: jarvis · Ctrl+B: board · Ctrl+N: notes</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/sortable.min.js"></script>
+  <script src="sticky-renderer.js"></script>
   <script type="module" src="renderer.js"></script>
 </body>
 </html>

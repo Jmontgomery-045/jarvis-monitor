@@ -9,3 +9,18 @@ contextBridge.exposeInMainWorld('jarvis', {
   closeWindow: () => ipcRenderer.send('window:close'),
   minimizeWindow: () => ipcRenderer.send('window:minimize')
 });
+
+contextBridge.exposeInMainWorld('board', {
+  load: () => ipcRenderer.invoke('data:load'),
+  save: (data) => ipcRenderer.invoke('data:save', data),
+  minimize: () => ipcRenderer.send('window:minimize'),
+  close: () => ipcRenderer.send('window:close')
+});
+
+contextBridge.exposeInMainWorld('notes', {
+  loadIndex: () => ipcRenderer.invoke('notes:loadIndex'),
+  saveIndex: (data) => ipcRenderer.invoke('notes:saveIndex', data),
+  read: (id) => ipcRenderer.invoke('notes:read', id),
+  write: (id, body) => ipcRenderer.invoke('notes:write', id, body),
+  delete: (id) => ipcRenderer.invoke('notes:delete', id),
+});

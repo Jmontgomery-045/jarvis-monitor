@@ -588,41 +588,55 @@ export class Graph {
       ctx.setLineDash([]);
     }
 
-    const bytes = n.contextBytes || 0;
-    const segBytes = 32 * 1024;
-    const ctxN = Math.min(64, Math.max(0, Math.ceil(bytes / segBytes)));
-    if (ctxN > 0) {
-      const seg = TWO_PI / Math.max(ctxN, 12);
-      const totalArc = seg * ctxN;
-      const gap = Math.min(seg * 0.25, 0.05);
-      const rot = -Math.PI / 2 - tt * 0.03;
-      for (let i = 0; i < ctxN; i++) {
-        const a0 = rot + i * seg + gap / 2;
-        const a1 = rot + (i + 1) * seg - gap / 2;
-        ctx.beginPath();
-        ctx.arc(cx, cy, ctxOuter, a0, a1);
-        ctx.arc(cx, cy, ctxInner, a1, a0, true);
-        ctx.closePath();
-        const t = i / Math.max(1, ctxN - 1);
-        const alpha = 0.35 + t * 0.5;
-        ctx.fillStyle = `rgba(${rgb},${alpha.toFixed(3)})`;
-        ctx.fill();
-      }
-      if (totalArc < TWO_PI - 0.01) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, (ctxInner + ctxOuter) / 2, rot + totalArc, rot + TWO_PI);
-        ctx.strokeStyle = `rgba(${rgb},0.12)`;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    } else {
+    const BYTES_PER_TOKEN = 3.5;
+    const TOKEN_FULL = 500_000;
+    const tokens = (n.contextBytes || 0) / BYTES_PER_TOKEN;
+    const fillFrac = Math.min(1, tokens / TOKEN_FULL);
+    const overflowFrac = Math.min(1, Math.max(0, (tokens - TOKEN_FULL) / TOKEN_FULL));
+    const rot = -Math.PI / 2;
+    const ctxMid = (ctxInner + ctxOuter) / 2;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, ctxMid, 0, TWO_PI);
+    ctx.strokeStyle = `rgba(${rgb},0.12)`;
+    ctx.lineWidth = ctxOuter - ctxInner;
+    ctx.stroke();
+
+    if (fillFrac > 0) {
       ctx.beginPath();
-      ctx.arc(cx, cy, (ctxInner + ctxOuter) / 2, 0, TWO_PI);
-      ctx.strokeStyle = `rgba(${rgb},0.15)`;
-      ctx.setLineDash([2, 6]);
-      ctx.lineWidth = 1;
+      ctx.arc(cx, cy, ctxMid, rot, rot + TWO_PI * fillFrac);
+      ctx.strokeStyle = `rgba(${rgb},0.85)`;
+      ctx.lineWidth = ctxOuter - ctxInner;
+      ctx.lineCap = 'butt';
       ctx.stroke();
-      ctx.setLineDash([]);
+    }
+
+    if (overflowFrac > 0) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, ctxMid, rot, rot + TWO_PI * overflowFrac);
+      const pulse = 0.75 + Math.sin(tt * 3) * 0.2;
+      ctx.strokeStyle = `rgba(255,80,80,${pulse.toFixed(3)})`;
+      ctx.lineWidth = ctxOuter - ctxInner;
+      ctx.stroke();
+    }
+
+    const TICK_INTERVAL = 50_000;
+    const tickCount = Math.floor(TOKEN_FULL / TICK_INTERVAL);
+    for (let i = 1; i < tickCount; i++) {
+      const frac = i / tickCount;
+      const a = rot + TWO_PI * frac;
+      const major = i % 2 === 0;
+      const inset = major ? 0 : (ctxOuter - ctxInner) * 0.25;
+      const x0 = cx + Math.cos(a) * (ctxInner + inset);
+      const y0 = cy + Math.sin(a) * (ctxInner + inset);
+      const x1 = cx + Math.cos(a) * (ctxOuter - inset);
+      const y1 = cy + Math.sin(a) * (ctxOuter - inset);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = `rgba(${rgb},${major ? 0.35 : 0.2})`;
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
     }
 
     ctx.beginPath();

@@ -28,16 +28,18 @@ let win;
 
 app.setAppUserModelId('com.jarvis.monitor');
 
-function createWindow() {
-  const display = screen.getPrimaryDisplay();
-  const { width, height } = display.workAreaSize;
-  const size = Math.min(900, Math.floor(Math.min(width, height) * 0.75));
+const dataFile = () => path.join(app.getPath('userData'), 'boards.json');
+const notesDir = () => path.join(app.getPath('userData'), 'notes');
+const notesIndexFile = () => path.join(app.getPath('userData'), 'notes-index.json');
+const NOTE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+const noteFile = (id) => path.join(notesDir(), `${id}.txt`);
 
+function createWindow() {
   win = new BrowserWindow({
-    width: size,
-    height: size,
-    minWidth: 480,
-    minHeight: 480,
+    width: 720,
+    height: 560,
+    minWidth: 280,
+    minHeight: 320,
     title: 'JARVIS Monitor',
     frame: false,
     transparent: false,
@@ -98,6 +100,80 @@ app.whenReady().then(async () => {
   ipcMain.on('window:close', () => win && win.close());
   ipcMain.on('window:minimize', () => win && win.minimize());
   on('change', (snapshot) => broadcast('state:full', snapshot));
+
+  ipcMain.handle('data:load', async () => {
+    try {
+      const txt = await fsp.readFile(dataFile(), 'utf8');
+      return JSON.parse(txt);
+    } catch {
+      return { groups: [] };
+    }
+  });
+
+  ipcMain.handle('data:save', async (_e, data) => {
+    try {
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        return { ok: false, error: 'Invalid payload: expected a non-null object' };
+      }
+      const dest = dataFile();
+      const tmp = dest + '.tmp';
+      await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+      await fsp.rename(tmp, dest);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('notes:loadIndex', async () => {
+    try {
+      const txt = await fsp.readFile(notesIndexFile(), 'utf8');
+      return JSON.parse(txt);
+    } catch {
+      return { groups: [] };
+    }
+  });
+
+  ipcMain.handle('notes:saveIndex', async (_e, data) => {
+    try {
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        return { ok: false, error: 'Invalid payload' };
+      }
+      const dest = notesIndexFile();
+      const tmp = dest + '.tmp';
+      await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+      await fsp.rename(tmp, dest);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('notes:read', async (_e, id) => {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id)) return '';
+    try { return await fsp.readFile(noteFile(id), 'utf8'); }
+    catch { return ''; }
+  });
+
+  ipcMain.handle('notes:write', async (_e, id, body) => {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id)) return { ok: false, error: 'Invalid id' };
+    try {
+      await fsp.mkdir(notesDir(), { recursive: true });
+      const dest = noteFile(id);
+      const tmp = dest + '.tmp';
+      await fsp.writeFile(tmp, typeof body === 'string' ? body : '', 'utf8');
+      await fsp.rename(tmp, dest);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('notes:delete', async (_e, id) => {
+    if (typeof id !== 'string' || !NOTE_ID_RE.test(id)) return { ok: false };
+    try { await fsp.unlink(noteFile(id)); } catch {}
+    return { ok: true };
+  });
 
   createWindow();
   startHookServer();

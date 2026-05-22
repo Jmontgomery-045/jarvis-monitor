@@ -1,7 +1,30 @@
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 const chokidar = require('chokidar');
 const { EventEmitter } = require('node:events');
+
+const WIN_PROC_TTL_MS = 4000;
+let winProcCache = { fetchedAt: 0, names: new Map(), pending: null };
+function loadWindowsProcessNames() {
+  const now = Date.now();
+  if (winProcCache.pending) return winProcCache.pending;
+  if ((now - winProcCache.fetchedAt) < WIN_PROC_TTL_MS) return Promise.resolve(winProcCache.names);
+  winProcCache.pending = new Promise((resolve) => {
+    execFile('tasklist.exe', ['/FO', 'CSV', '/NH'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      const names = new Map();
+      if (!err && stdout) {
+        for (const line of stdout.split(/\r?\n/)) {
+          const m = /^"([^"]+)","(\d+)"/.exec(line);
+          if (m) names.set(Number(m[2]), m[1].toLowerCase());
+        }
+      }
+      winProcCache = { fetchedAt: Date.now(), names, pending: null };
+      resolve(names);
+    });
+  });
+  return winProcCache.pending;
+}
 
 function buildSource(s) {
   return {
@@ -76,18 +99,50 @@ function isPidAlive(pid) {
 
 const PID_CHECK_TTL_MS = 5000;
 const pidCheckCache = new Map();
-async function isPidAliveForSource(source, pid) {
+async function isClaudeProcAlive(source, pid, meta) {
   if (!pid || !Number.isFinite(pid)) return false;
-  if (!source.procPath) return isPidAlive(pid);
-  const key = `${source.id}:${pid}`;
+  const startedAt = meta && meta.startedAt ? Date.parse(meta.startedAt) : 0;
+  const key = `${source.id}:${pid}:${startedAt}`;
   const cached = pidCheckCache.get(key);
   const now = Date.now();
   if (cached && (now - cached.checkedAt) < PID_CHECK_TTL_MS) return cached.alive;
+
   let alive = false;
-  try {
-    await fsp.stat(path.join(source.procPath, String(pid)));
-    alive = true;
-  } catch { alive = false; }
+  if (source.procPath) {
+    try {
+      const procDir = path.join(source.procPath, String(pid));
+      await fsp.stat(procDir);
+      let cmdline = '';
+      try { cmdline = (await fsp.readFile(path.join(procDir, 'cmdline'), 'utf8')).replace(/\0/g, ' '); } catch {}
+      const cmdlineHasClaude = /claude/i.test(cmdline);
+      let startMatches = false;
+      if (meta && meta.procStart) {
+        try {
+          const stat = await fsp.readFile(path.join(procDir, 'stat'), 'utf8');
+          const close = stat.lastIndexOf(')');
+          const rest = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/) : [];
+          const starttime = rest[19];
+          if (starttime && String(meta.procStart) === starttime) startMatches = true;
+        } catch {}
+      }
+      alive = cmdlineHasClaude || startMatches;
+    } catch { alive = false; }
+  } else if (process.platform === 'win32') {
+    if (!isPidAlive(pid)) alive = false;
+    else {
+      try {
+        const names = await loadWindowsProcessNames();
+        const name = names.get(pid);
+        alive = !!name && (name === 'node.exe' || name === 'claude.exe' || name.includes('claude'));
+      } catch { alive = isPidAlive(pid); }
+    }
+  } else {
+    alive = isPidAlive(pid);
+  }
+
+  for (const [k] of pidCheckCache) {
+    if (k.startsWith(`${source.id}:${pid}:`) && k !== key) pidCheckCache.delete(k);
+  }
   pidCheckCache.set(key, { alive, checkedAt: now });
   return alive;
 }
@@ -102,7 +157,7 @@ async function loadInstance(source, pidFile) {
     }
     return;
   }
-  if (!(await isPidAliveForSource(source, meta.pid))) {
+  if (!(await isClaudeProcAlive(source, meta.pid, meta))) {
     if (state.instances[meta.sessionId] && state.instances[meta.sessionId].source === source.id) {
       delete state.instances[meta.sessionId];
     }
